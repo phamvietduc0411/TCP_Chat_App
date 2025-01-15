@@ -8,34 +8,35 @@ using System.Threading;
 
 class Program
 {
-    // Danh sách tất cả các client kết nối
-    static List<TcpClient> clients = new List<TcpClient>();
+    // Danh sách các client đã kết nối
+    private static List<TcpClient> clients = new List<TcpClient>();
+    static int _port = 8888;
 
     static void Main(string[] args)
     {
-        Console.WriteLine("Choose mode: 1 for Server, 2 for Client");
+        Console.WriteLine("Choose: 1 - Server, 2 - Client");
         string choice = Console.ReadLine();
 
         if (choice == "1")
         {
-            StartServer();
+            RunServer();
         }
         else if (choice == "2")
         {
-            StartClient();
+            RunClient();
         }
         else
         {
-            Console.WriteLine("Invalid choice.");
+            Console.WriteLine("Invalid choice");
         }
     }
 
-    static void StartServer()
+    // Chạy server
+    private static void RunServer()
     {
-        Console.WriteLine($"Current directory: {Directory.GetCurrentDirectory()}");
-        TcpListener listener = new TcpListener(IPAddress.Any, 8888);
+        TcpListener listener = new TcpListener(IPAddress.Any, _port);
         listener.Start();
-        Console.WriteLine("Server started on port 8888");
+        Console.WriteLine($"Server start in port{ _port}.");
 
         ThreadPool.QueueUserWorkItem(_ =>
         {
@@ -46,84 +47,49 @@ class Program
                 {
                     clients.Add(client);
                 }
-                Console.WriteLine("New client connected.");
-                ThreadPool.QueueUserWorkItem(_ => HandleClient(client));
+                Console.WriteLine("One client connect:");
+                ThreadPool.QueueUserWorkItem(state => HandleClient(client));
             }
         });
 
-        Console.WriteLine("Press Enter to exit.");
+        Console.WriteLine("Enter to exits");
         Console.ReadLine();
         listener.Stop();
     }
 
-    static void HandleClient(TcpClient client)
+    // Xử lý từng client
+    private static void HandleClient(TcpClient client)
     {
         string clientName = string.Empty;
+
         try
         {
             NetworkStream stream = client.GetStream();
             byte[] buffer = new byte[1024];
-            int bytesRead;
 
-            // Đọc tên client ngay khi kết nối
-            bytesRead = stream.Read(buffer, 0, buffer.Length);
+            // Đọc tên client khi kết nối
+            int bytesRead = stream.Read(buffer, 0, buffer.Length);
             clientName = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
-            Console.WriteLine($"Client connected with name: {clientName}");
+            Console.WriteLine($"Client-{clientName}");
 
             while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) > 0)
             {
                 string message = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
-                Console.WriteLine($"Received message from {clientName}: {message}");
+                Console.WriteLine($"{clientName}: {message}");
 
-                if (message.StartsWith("SEND_FILE", StringComparison.OrdinalIgnoreCase))
+                if (message.Equals("SEND_FILE", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Nhận file
-                    byte[] fileBuffer = new byte[1024 * 1024];
-                    bytesRead = stream.Read(fileBuffer, 0, fileBuffer.Length);
-
-                    if (bytesRead > 0)
-                    {
-                        byte[] fileData = new byte[bytesRead];
-                        Array.Copy(fileBuffer, fileData, bytesRead);
-
-                        // Tạo tên file với client name và timestamp
-                        string timestamp = DateTime.Now.ToString("yyyyMMddHHmmss");
-                        string fileName = $"mat_{timestamp}.txt";
-
-                        // Lưu file
-                        File.WriteAllBytes(fileName, fileData);
-                        Console.WriteLine($"File saved: {fileName}");
-                    }
+                    ReceiveFile(stream, clientName);
                 }
                 else
                 {
-                    // Gửi message cho tất cả client khác
-                    string formattedMessage = $"{clientName}: {message}";
-                    lock (clients)
-                    {
-                        foreach (var c in clients)
-                        {
-                            if (c != client)
-                            {
-                                try
-                                {
-                                    NetworkStream clientStream = c.GetStream();
-                                    byte[] data = Encoding.UTF8.GetBytes(formattedMessage);
-                                    clientStream.Write(data, 0, data.Length);
-                                }
-                                catch
-                                {
-                                    // Nếu có client nào đó ngắt kết nối, bỏ qua
-                                }
-                            }
-                        }
-                    }
+                    BroadcastMessage(client, $"{clientName}: {message}");
                 }
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Client error: {ex.Message}");
+            Console.WriteLine($"Error from Client {clientName}: {ex.Message}");
         }
         finally
         {
@@ -135,60 +101,115 @@ class Program
         }
     }
 
-    static void StartClient()
+    // Nhận file từ client
+    private static void ReceiveFile(NetworkStream stream, string clientName)
+    {
+        try
+        {
+            byte[] fileBuffer = new byte[1024 * 1024];
+            int bytesRead = stream.Read(fileBuffer, 0, fileBuffer.Length);
+
+            if (bytesRead > 0)
+            {
+                string timestamp = DateTime.Now.ToString("yyyyMMddHHmmss");
+                string fileName = $"{clientName}_file_{timestamp}.txt";
+
+                File.WriteAllBytes(fileName, fileBuffer[..bytesRead]);
+                Console.WriteLine($"File was save : {fileName}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error when receive file: {ex.Message}");
+        }
+    }
+
+    // Gửi tin nhắn đến tất cả các client khác
+    private static void BroadcastMessage(TcpClient sender, string message)
+    {
+        lock (clients)
+        {
+            foreach (var client in clients)
+            {
+                if (client != sender)
+                {
+                    try
+                    {
+                        NetworkStream clientStream = client.GetStream();
+                        byte[] data = Encoding.UTF8.GetBytes(message);
+                        clientStream.Write(data, 0, data.Length);
+                    }
+                    catch
+                    {
+                        // Bỏ qua client ngắt kết nối
+                    }
+                }
+            }
+        }
+    }
+
+    // Chạy client
+    private static void RunClient()
     {
         try
         {
             TcpClient client = new TcpClient();
-            client.Connect("127.0.0.1", 8888);
-            Console.WriteLine("Connected to server.");
+            client.Connect("127.0.0.1", _port);
+            Console.WriteLine("Connected to the server successfully.");
 
             NetworkStream stream = client.GetStream();
 
-            // Gửi tên client ngay khi kết nối
-            Console.Write("Enter your name: ");
+            // Gửi tên client
+            Console.Write("Enter your name to join to server: ");
             string clientName = Console.ReadLine();
             byte[] nameData = Encoding.UTF8.GetBytes(clientName);
             stream.Write(nameData, 0, nameData.Length);
 
+            // Luồng để nhận tin nhắn từ server
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 while (true)
                 {
-                    byte[] buffer = new byte[1024];
-                    int bytesRead = stream.Read(buffer, 0, buffer.Length);
-
-                    if (bytesRead > 0)
+                    try
                     {
-                        string receivedMessage = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                        Console.WriteLine(receivedMessage);
+                        byte[] buffer = new byte[1024];
+                        int bytesRead = stream.Read(buffer, 0, buffer.Length);
+
+                        if (bytesRead > 0)
+                        {
+                            string receivedMessage = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                            Console.WriteLine(receivedMessage);
+                        }
+                    }
+                    catch
+                    {
+                        break;
                     }
                 }
-                
             });
 
+            // Gửi tin nhắn hoặc file đến server
             while (true)
             {
                 string message = Console.ReadLine();
-                if (message.StartsWith("SEND_FILE", StringComparison.OrdinalIgnoreCase))
+
+                if (message.Equals("SEND_FILE", StringComparison.OrdinalIgnoreCase))
                 {
-                    Console.WriteLine("Enter file path:");
+                    Console.Write("Enter file path : ");
                     string filePath = Console.ReadLine();
 
                     if (File.Exists(filePath))
                     {
-                        // Gửi lệnh "SEND_FILE" trước
                         byte[] commandData = Encoding.UTF8.GetBytes("SEND_FILE");
                         stream.Write(commandData, 0, commandData.Length);
 
-                        // Gửi file
                         byte[] fileBytes = File.ReadAllBytes(filePath);
                         stream.Write(fileBytes, 0, fileBytes.Length);
-                        Console.WriteLine($"File {filePath} sent to server.");
+                        Console.WriteLine($"Send file: {filePath}");
                     }
                     else
                     {
-                        Console.WriteLine("File does not exist.");
+                        Console.WriteLine("File doesn't exits .");
                     }
                 }
                 else
@@ -200,7 +221,7 @@ class Program
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Client error: {ex.Message}");
+            Console.WriteLine($"Error client: {ex.Message}");
         }
     }
 }
